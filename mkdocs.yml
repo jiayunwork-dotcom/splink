@@ -193,6 +193,7 @@ nav:
         - Regular expressions: "topic_guides/comparisons/regular_expressions.ipynb"
     - Training:
       - Training rationale: "topic_guides/training/training_rationale.md"
+      - Weighted clerical labels: "topic_guides/training/weighted_clerical_labels.md"
     - Evaluation:
       - Overview: "topic_guides/evaluation/overview.md"
       - Model: "topic_guides/evaluation/model.md"
