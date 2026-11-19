@@ -179,3 +179,89 @@ uv pip install -p .venv/bin/python -e .
 * `splink/internals/linker_components/training.py` — public keyword arguments;
 * `tests/test_weighted_pairwise_labels.py` — hand-checkable and contract tests;
 * `docs/topic_guides/training/weighted_clerical_labels.md` — user guide.
+
+# Stratified review sampling and weighted quality evaluation
+
+A separate, evaluation-only layer sits on top of the same pairwise identity
+contract. It addresses the case where clerical review has a fixed budget and
+is deliberately non-uniform across the score range, so counting reviewed rows
+no longer represents the original prediction table.
+
+## Public API
+
+```python
+# 1. reproducible stratified sample from the full generated predictions
+sampled = linker.evaluation.sample_pairwise_predictions(
+    predictions,                 # untruncated predict() table or table name
+    budget=1000,                 # positive Python int
+    score_bins=[0.0, 0.5, 0.9, 1.0],
+    seed=42,                     # int in [0, 2**32)
+)
+
+# 2. after clerical review, the same table carries clerical_match_score and
+#    the inclusion_probability produced above
+linker.evaluation.accuracy_analysis_from_labels_table(
+    labels_table,
+    inclusion_probability_column="inclusion_probability",  # None = legacy
+)
+linker.evaluation.prediction_errors_from_labels_table(
+    labels_table,
+    inclusion_probability_column="inclusion_probability",
+)
+```
+
+Each reviewed pair represents `1 / inclusion_probability` pairs of the
+*generated* prediction population (its `evaluation_weight`). The truth-space
+`p/n/tp/tn/fp/fn` and every derived metric become weighted masses, the table
+adds `sampled_pair_count` and `estimated_pair_count`, and the four chart
+tooltips show both counts. The population is exactly the generated prediction
+table: no claim is made about pairs blocking never generated, and no
+confidence intervals are produced.
+
+## Design and measured results
+
+See `docs/topic_guides/evaluation/weighted_sampling_design.md` for the
+allocation rule (one pair per non-empty stratum plus largest-remainder
+proportional allocation), the within-stratum canonical-hash SRSWOR draw, the
+rejected alternatives and the reproducibility/memory trade-offs.
+
+Measured at `budget = 1000` over four strata (Python 3.11, DuckDB 1.1.3):
+
+| prediction pairs | SQL wall time | Python extra peak | DuckDB memory | mass-conservation error |
+|-----------------:|--------------:|------------------:|--------------:|------------------------:|
+| 100,000 | 0.17 s | 0.08 MiB | 3.4 MiB | 0.0 |
+| 1,000,000 | 0.42 s | 0.08 MiB | 30.9 MiB | 0.0 |
+
+## Files
+
+* `splink/internals/pairwise_sampling.py` — argument validation, canonical
+  identities, largest-remainder allocation, hash-ranked SRSWOR;
+* `splink/internals/weighted_evaluation.py` — probability-column validation
+  and the weighted truth-space SQL;
+* `splink/internals/accuracy.py`, `block_from_labels.py`,
+  `comparison_vector_values.py`, `predict.py`, `charts.py` and
+  `linker_components/evaluation.py` — threading the probability through the
+  existing blocking → comparison vectors → prediction → aggregation → chart
+  chain, with `None` preserving the legacy behaviour;
+* `tests/test_pairwise_sampling.py`,
+  `tests/test_weighted_evaluation.py` — hand-enumerated and contract tests;
+* `examples/weighted_labels/weighted_sampling_evaluation_example.py` —
+  end-to-end worked example;
+* `examples/weighted_labels/sampling_scale_experiment.py` — scale/resource
+  experiment;
+* `docs/topic_guides/evaluation/weighted_sampling_design.md` — design and
+  population-boundary documentation.
+
+## Reproducing
+
+```bash
+.venv/bin/python -m pytest \
+  tests/test_pairwise_sampling.py tests/test_weighted_evaluation.py -q
+
+.venv/bin/python -I \
+  examples/weighted_labels/weighted_sampling_evaluation_example.py
+
+.venv/bin/python -I \
+  examples/weighted_labels/sampling_scale_experiment.py \
+  --sizes 100000 1000000 --budget 1000
+```

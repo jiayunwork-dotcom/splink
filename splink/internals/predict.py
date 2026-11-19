@@ -22,6 +22,7 @@ def predict_from_comparison_vectors_sqls_using_settings(
     threshold_match_weight: float = None,
     include_clerical_match_score: bool = False,
     sql_infinity_expression: str = "'infinity'",
+    extra_columns: List[str] | None = None,
 ) -> list[dict[str, str]]:
     return predict_from_comparison_vectors_sqls(
         unique_id_input_columns=settings_obj.column_info_settings.unique_id_input_columns,
@@ -35,6 +36,7 @@ def predict_from_comparison_vectors_sqls_using_settings(
         needs_matchkey_column=settings_obj._needs_matchkey_column,
         include_clerical_match_score=include_clerical_match_score,
         sql_infinity_expression=sql_infinity_expression,
+        extra_columns=extra_columns,
     )
 
 
@@ -51,6 +53,7 @@ def predict_from_comparison_vectors_sqls(
     needs_matchkey_column: bool = False,
     include_clerical_match_score: bool = False,
     sql_infinity_expression: str = "'infinity'",
+    extra_columns: List[str] | None = None,
 ) -> list[dict[str, str]]:
     sqls = []
 
@@ -69,8 +72,10 @@ def predict_from_comparison_vectors_sqls(
     else:
         clerical_match_score = ""
 
+    extra_cols = ", " + ", ".join(extra_columns) if extra_columns else ""
+
     sql = f"""
-    select {select_cols_expr} {clerical_match_score}
+    select {select_cols_expr} {clerical_match_score} {extra_cols}
     from __splink__df_comparison_vectors
     """
 
@@ -114,7 +119,7 @@ def predict_from_comparison_vectors_sqls(
     select
     log2({bayes_factor_expr}) as match_weight,
     {match_prob_expr} as match_probability,
-    {select_cols_expr} {clerical_match_score}
+    {select_cols_expr} {clerical_match_score} {extra_cols}
     from __splink__df_match_weight_parts
     {threshold_expr}
     """

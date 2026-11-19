@@ -12,6 +12,7 @@ logger = logging.getLogger(__name__)
 def compute_comparison_vector_values_sql(
     columns_to_select_for_comparison_vector_values: list[str],
     include_clerical_match_score: bool = False,
+    extra_columns: list[str] | None = None,
 ) -> str:
     """Compute the comparison vectors from __splink__df_blocked, the
     dataframe of blocked pairwise record comparisons that includes the various
@@ -27,8 +28,12 @@ def compute_comparison_vector_values_sql(
     else:
         clerical_match_score = ""
 
+    extra_cols = ""
+    if extra_columns:
+        extra_cols = ", " + ", ".join(extra_columns)
+
     sql = f"""
-    select {select_cols_expr} {clerical_match_score}
+    select {select_cols_expr} {clerical_match_score} {extra_cols}
     from __splink__df_blocked
     """
 

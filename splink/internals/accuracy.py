@@ -17,6 +17,11 @@ from splink.internals.vertically_concatenate import (
     compute_df_concat,
     compute_df_concat_with_tf,
 )
+from splink.internals.weighted_evaluation import (
+    EVALUATION_WEIGHT_COLUMN,
+    validate_inclusion_probability_labels,
+    weighted_truth_space_table_sqls,
+)
 
 if TYPE_CHECKING:
     from splink.internals.linker import Linker
@@ -314,19 +319,34 @@ def truth_space_table_from_labels_table(
     labels_tablename: str,
     threshold_actual: float = 0.5,
     match_weight_round_to_nearest: Optional[float] = None,
+    inclusion_probability_column: Optional[str] = None,
 ) -> SplinkDataFrame:
     pipeline = CTEPipeline()
 
     nodes_with_tf = compute_df_concat_with_tf(linker, pipeline)
     pipeline = CTEPipeline([nodes_with_tf])
 
-    sqls = predictions_from_sample_of_pairwise_labels_sql(linker, labels_tablename)
+    sqls = predictions_from_sample_of_pairwise_labels_sql(
+        linker,
+        labels_tablename,
+        inclusion_probability_column=inclusion_probability_column,
+    )
     pipeline.enqueue_list_of_sqls(sqls)
 
     # c_P and c_N are clerical positive and negative, respectively
-    sqls = truth_space_table_from_labels_with_predictions_sqls(
-        threshold_actual, match_weight_round_to_nearest
-    )
+    if inclusion_probability_column is None:
+        sqls = truth_space_table_from_labels_with_predictions_sqls(
+            threshold_actual, match_weight_round_to_nearest
+        )
+    else:
+        validate_inclusion_probability_labels(
+            linker, labels_tablename, inclusion_probability_column
+        )
+        sqls = weighted_truth_space_table_sqls(
+            threshold_actual=threshold_actual,
+            match_weight_round_to_nearest=match_weight_round_to_nearest,
+            inclusion_probability_column=inclusion_probability_column,
+        )
     pipeline.enqueue_list_of_sqls(sqls)
 
     df_truth_space_table = linker._db_api.sql_pipeline_to_splink_dataframe(pipeline)
@@ -404,15 +424,29 @@ def truth_space_table_from_labels_column(
     return df_truth_space_table
 
 
-def predictions_from_sample_of_pairwise_labels_sql(linker, labels_tablename):
+def predictions_from_sample_of_pairwise_labels_sql(
+    linker, labels_tablename, inclusion_probability_column: Optional[str] = None
+):
     sqls = block_from_labels(
-        linker, labels_tablename, include_clerical_match_score=True
+        linker,
+        labels_tablename,
+        include_clerical_match_score=True,
+        extra_label_columns=(
+            [inclusion_probability_column]
+            if inclusion_probability_column is not None
+            else None
+        ),
     )
 
     sql_info = {
         "sql": compute_comparison_vector_values_sql(
             linker._settings_obj._columns_to_select_for_comparison_vector_values,
             include_clerical_match_score=True,
+            extra_columns=(
+                [inclusion_probability_column]
+                if inclusion_probability_column is not None
+                else None
+            ),
         ),
         "output_table_name": "__splink__df_comparison_vectors",
     }
@@ -423,6 +457,11 @@ def predictions_from_sample_of_pairwise_labels_sql(linker, labels_tablename):
         linker._settings_obj,
         include_clerical_match_score=True,
         sql_infinity_expression=linker._infinity_expression,
+        extra_columns=(
+            [inclusion_probability_column]
+            if inclusion_probability_column is not None
+            else None
+        ),
     )
 
     sqls.extend(sqls_2)
@@ -431,7 +470,7 @@ def predictions_from_sample_of_pairwise_labels_sql(linker, labels_tablename):
     sql = f"""
     select *, {br_col}
     from __splink__df_predict
-    """
+    """  # the probability column (if any) rides along via df_predict's select *
 
     sql_info = {
         "sql": sql,
@@ -450,12 +489,22 @@ def prediction_errors_from_labels_table(
     include_false_positives: bool = True,
     include_false_negatives: bool = True,
     threshold_match_probability: float = 0.5,
+    inclusion_probability_column: Optional[str] = None,
 ) -> SplinkDataFrame:
     pipeline = CTEPipeline()
     nodes_with_tf = compute_df_concat_with_tf(linker, pipeline)
     pipeline = CTEPipeline([nodes_with_tf])
 
-    sqls = predictions_from_sample_of_pairwise_labels_sql(linker, labels_tablename)
+    if inclusion_probability_column is not None:
+        validate_inclusion_probability_labels(
+            linker, labels_tablename, inclusion_probability_column
+        )
+
+    sqls = predictions_from_sample_of_pairwise_labels_sql(
+        linker,
+        labels_tablename,
+        inclusion_probability_column=inclusion_probability_column,
+    )
 
     pipeline.enqueue_list_of_sqls(sqls)
 
@@ -478,17 +527,39 @@ def prediction_errors_from_labels_table(
 
     where_condition = " OR ".join(where_conditions)
 
-    sql = f"""
-    select *,
-    case
-    when {false_positives} then 'FP'
-    when {false_negatives} then 'FN'
-    END as truth_status
+    # On the weighted path every error carries its design mass (the number of
+    # population pairs it represents).  The strict < / > inequalities preserve
+    # the legacy convention: a pair whose match_probability is exactly equal to
+    # the threshold is neither FP nor FN in this table.
+    if inclusion_probability_column is not None:
+        weight_expr = (
+            f"1.0 / cast({inclusion_probability_column} as float8) "
+            f"as {EVALUATION_WEIGHT_COLUMN}"
+        )
+        sql = f"""
+        select *,
+        case
+        when {false_positives} then 'FP'
+        when {false_negatives} then 'FN'
+        END as truth_status,
+        {weight_expr}
 
-    from __splink__labels_with_predictions
-    where
-    {where_condition}
-    """
+        from __splink__labels_with_predictions
+        where
+        {where_condition}
+        """
+    else:
+        sql = f"""
+        select *,
+        case
+        when {false_positives} then 'FP'
+        when {false_negatives} then 'FN'
+        END as truth_status
+
+        from __splink__labels_with_predictions
+        where
+        {where_condition}
+        """
 
     pipeline.enqueue_sql(sql, "__splink__labels_with_fp_fn_status")
 

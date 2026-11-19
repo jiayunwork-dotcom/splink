@@ -20,6 +20,7 @@ from splink.internals.labelling_tool import (
     generate_labelling_tool_comparisons,
     render_labelling_tool_html,
 )
+from splink.internals.pairwise_sampling import sample_pairwise_predictions
 from splink.internals.splink_dataframe import SplinkDataFrame
 from splink.internals.unlinkables import unlinkables_data
 
@@ -35,12 +36,100 @@ class LinkerEvalution:
     def __init__(self, linker: Linker):
         self._linker = linker
 
+    def sample_pairwise_predictions(
+        self,
+        predictions: str | SplinkDataFrame,
+        *,
+        budget: int,
+        score_bins: list[float],
+        seed: int = 0,
+    ) -> SplinkDataFrame:
+        """Draw a stratified, reproducible sample from a table of generated
+        pairwise predictions for later clerical review.
+
+        The sampling population is exactly the supplied predictions table (one
+        unoriented record pair per row). Splink only generates pairs that
+        pass its blocking rules, so the resulting design says nothing about
+        pairs blocking never generated, and no confidence intervals are
+        produced. The allocation of the review budget and the within-stratum
+        draw are decided without looking at any clerical labels and cannot
+        depend on input row order, physical table name or the left/right
+        orientation of a pair.
+
+        Strata are the half-open intervals of ``match_probability`` defined
+        by ``score_bins``: ``[b_h, b_{h+1})`` for adjacent bin edges, with the
+        final stratum also containing a score of exactly ``1``. Every
+        non-empty stratum receives at least one sampled pair; the remaining
+        budget is apportioned proportionally to stratum population using the
+        largest-remainder method. Within a stratum, pairs are sampled without
+        replacement at equal inclusion probability
+        ``stratum_sample_size / stratum_population``.
+
+        After clerical review, add a ``clerical_match_score`` column and pass
+        the table (with its ``inclusion_probability`` column) to
+        :meth:`accuracy_analysis_from_labels_table` or
+        :meth:`prediction_errors_from_labels_table` using
+        ``inclusion_probability_column="inclusion_probability"``. Each
+        reviewed pair then represents ``1 / inclusion_probability``
+        population pairs.
+
+        Args:
+            predictions (str | SplinkDataFrame): An untruncated predict
+                result table (e.g. ``linker.inference.predict()`` with no
+                score threshold) or its registered table name. One row is one
+                complete, unoriented identity pair and must include
+                ``match_probability`` and ``match_weight``.
+            budget (int): Positive, non-bool Python int; the maximum number of
+                pairs to review. The actual sample size is
+                ``min(budget, population size)``.
+            score_bins (list[float]): Strictly increasing finite numbers,
+                starting at ``0`` and ending at ``1`` (bools are not real
+                numbers here). Adjacent edges define the strata.
+            seed (int, optional): Non-bool Python int in
+                ``[0, 2**32)`` controlling the reproducible within-stratum
+                draw. Defaults to ``0``.
+
+        Returns:
+            SplinkDataFrame: The sampled prediction rows, keeping every input
+            column (pair identities, ``match_probability``,
+            ``match_weight``) and adding ``sample_stratum``,
+            ``stratum_population``, ``stratum_sample_size`` and
+            ``inclusion_probability``. An empty input population returns an
+            empty table with the same column structure.
+
+        Raises:
+            ValueError: For illegal arguments, non-finite or out-of-range
+                scores, self-pairs, unknown nodes, duplicated unoriented
+                pairs, or a budget smaller than the number of non-empty
+                strata.
+
+        Examples:
+            ```py
+            df_predict = linker.inference.predict()
+            df_sample = linker.evaluation.sample_pairwise_predictions(
+                df_predict,
+                budget=1000,
+                score_bins=[0.0, 0.5, 0.9, 1.0],
+                seed=42,
+            )
+            ```
+        """
+        return sample_pairwise_predictions(
+            self._linker,
+            predictions,
+            budget=budget,
+            score_bins=score_bins,
+            seed=seed,
+        )
+
     def prediction_errors_from_labels_table(
         self,
         labels_splinkdataframe_or_table_name: str | SplinkDataFrame,
         include_false_positives: bool = True,
         include_false_negatives: bool = True,
         threshold_match_probability: float = 0.5,
+        *,
+        inclusion_probability_column: str | None = None,
     ) -> SplinkDataFrame:
         """Find false positives and false negatives based on the comparison between the
         `clerical_match_score` in the labels table compared with the splink predicted
@@ -63,6 +152,19 @@ class LinkerEvalution:
             include_false_negatives (bool, optional): Defaults to True.
             threshold_match_probability (float, optional): Threshold probability
                 above which a prediction considered to be a match. Defaults to 0.5.
+            inclusion_probability_column (str, optional): Keyword-only. Name of a
+                column on the labels table holding the sampling inclusion
+                probability of each reviewed pair (e.g. the
+                ``inclusion_probability`` column produced by
+                :meth:`sample_pairwise_predictions`). Values must be finite and
+                in the interval ``(0, 1]``. When supplied, the output keeps the
+                probability column and adds an ``evaluation_weight`` equal to
+                ``1 / inclusion_probability``, so each error reports the mass of
+                the generated prediction population it represents. ``None`` (the
+                default) keeps the legacy unweighted behaviour. Note the legacy
+                strict threshold convention is preserved on both paths: pairs
+                with ``match_probability`` exactly equal to the threshold are
+                neither false positives nor false negatives here.
 
         Examples:
             ```py
@@ -85,6 +187,7 @@ class LinkerEvalution:
             include_false_positives,
             include_false_negatives,
             threshold_match_probability,
+            inclusion_probability_column=inclusion_probability_column,
         )
 
     def accuracy_analysis_from_labels_column(
@@ -204,6 +307,7 @@ class LinkerEvalution:
                 "phi",
             ]
         ] = [],
+        inclusion_probability_column: str | None = None,
     ) -> Union[ChartReturnType, SplinkDataFrame]:
         """Generate an accuracy chart or table from labelled (ground truth) data.
 
@@ -245,6 +349,28 @@ class LinkerEvalution:
                 (emphasis on recall) and \u03b2=0.5 (emphasis on precision)
                 - `"p4"` -  an extended F1 score with specificity and NPV included
                 - `"phi"` - \u03c6 coefficient or Matthews correlation coefficient (MCC)
+            inclusion_probability_column (str, optional): Keyword-only. Name of a
+                column on the labels table holding the sampling inclusion
+                probability of each reviewed pair (e.g. the
+                ``inclusion_probability`` column produced by
+                :meth:`sample_pairwise_predictions`). Values must be finite and
+                in the interval ``(0, 1]``. When supplied, every reviewed pair
+                represents ``1 / inclusion_probability`` pairs of the generated
+                prediction population: the truth-space ``p``, ``n``,
+                ``tp``, ``tn``, ``fp``, ``fn`` and
+                ``total_clerical_labels`` become weighted masses (and may be
+                fractional), precision/recall and every metric in
+                ``add_metrics`` derive from those weighted statistics, and the
+                table additionally reports ``sampled_pair_count`` (the actual
+                number of reviewed pairs) alongside
+                ``estimated_pair_count`` (the estimated population mass). All
+                four chart outputs use the weighted results and their tooltips
+                show both the reviewed count and the estimated mass. ``None``
+                (the default) keeps the legacy, unweighted behaviour and chart
+                appearance exactly. Estimates only cover the generated
+                prediction population; nothing is claimed about pairs that
+                blocking never generated, and no confidence intervals are
+                given.
 
         Returns:
             altair.Chart: An altair chart
@@ -277,17 +403,19 @@ class LinkerEvalution:
             labels_tablename,
             threshold_actual=threshold_match_probability,
             match_weight_round_to_nearest=match_weight_round_to_nearest,
+            inclusion_probability_column=inclusion_probability_column,
         )
         recs = df_truth_space.as_record_dict()
+        weighted = inclusion_probability_column is not None
 
         if output_type == "threshold_selection":
-            return threshold_selection_tool(recs, add_metrics=add_metrics)
+            return threshold_selection_tool(recs, add_metrics=add_metrics, weighted=weighted)
         elif output_type == "accuracy":
-            return accuracy_chart(recs, add_metrics=add_metrics)
+            return accuracy_chart(recs, add_metrics=add_metrics, weighted=weighted)
         elif output_type == "roc":
-            return roc_chart(recs)
+            return roc_chart(recs, weighted=weighted)
         elif output_type == "precision_recall":
-            return precision_recall_chart(recs)
+            return precision_recall_chart(recs, weighted=weighted)
         elif output_type == "table":
             return df_truth_space
         else:

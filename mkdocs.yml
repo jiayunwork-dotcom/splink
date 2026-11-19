@@ -201,6 +201,7 @@ nav:
         - Overview: "topic_guides/evaluation/edge_overview.md"
         - Edge Metrics: "topic_guides/evaluation/edge_metrics.md"
         - Clerical Labelling: "topic_guides/evaluation/labelling.md"
+        - Stratified review sampling and weighted quality evaluation: "topic_guides/evaluation/weighted_sampling_design.md"
       - Clusters:
         - Overview: "topic_guides/evaluation/clusters/overview.md"
         - Graph metrics: "topic_guides/evaluation/clusters/graph_metrics.md"

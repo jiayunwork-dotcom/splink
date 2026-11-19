@@ -153,3 +153,23 @@ Models keep using the existing JSON save/load. The JSON contains trained
 parameters only — never the raw label table, weights or per-pair clerical
 scores — so predictions from a reloaded model are identical to the pre-save
 model.
+
+## Training weights are not sampling probabilities
+
+The `label_weight` documented here represents **evidence frequency** for
+m/EM training: an integer weight behaves like repeating the same independent
+piece of clerical evidence.  It is a different concept from the
+`inclusion_probability` produced by
+`linker.evaluation.sample_pairwise_predictions(...)`, which is a property of
+the stratified *review design* used for quality evaluation
+(see [Stratified review sampling and weighted quality
+evaluation](../evaluation/weighted_sampling_design.md)).
+
+The two never mix automatically:
+
+* evaluation operations never train the model and do not read
+  `label_weight`;
+* the m/EM training entry points only treat a column as a frequency weight
+  when the caller explicitly passes `label_weight_column=...`, so sampling
+  metadata on a labels table is never silently consumed as training evidence;
+* neither kind of metadata is written into the model JSON.

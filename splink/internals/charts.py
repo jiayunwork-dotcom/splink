@@ -205,7 +205,49 @@ def waterfall_chart(
     return altair_or_json(chart, as_dict=as_dict)
 
 
-def roc_chart(records, width=400, height=400, as_dict=False):
+def _add_weighted_tooltips(chart: dict) -> dict:
+    """Add reviewed/estimated pair counts to every tooltip of a chart spec.
+
+    Used only on the weighted evaluation path, where truth-space records carry
+    ``sampled_pair_count`` (the actual number of clerically reviewed pairs) and
+    ``estimated_pair_count`` (the estimated generated-population mass, which may
+    be fractional).  Unweighted chart specs are never passed here and keep
+    their original tooltips and number formats.
+    """
+    weighted_entries = [
+        {
+            "type": "quantitative",
+            "field": "sampled_pair_count",
+            "format": ",.0f",
+            "title": "Sampled pairs (reviewed)",
+        },
+        {
+            "type": "quantitative",
+            "field": "estimated_pair_count",
+            "format": ",.2f",
+            "title": "Estimated population pairs",
+        },
+    ]
+
+    def walk(node):
+        if isinstance(node, dict):
+            tooltip = node.get("tooltip")
+            if isinstance(tooltip, list) and tooltip:
+                existing_fields = {t.get("field") for t in tooltip}
+                for entry in weighted_entries:
+                    if entry["field"] not in existing_fields:
+                        tooltip.append(dict(entry))
+            for value in node.values():
+                walk(value)
+        elif isinstance(node, list):
+            for value in node:
+                walk(value)
+
+    walk(chart)
+    return chart
+
+
+def roc_chart(records, width=400, height=400, as_dict=False, weighted=False):
     chart_path = "roc.json"
     chart = load_chart_definition(chart_path)
 
@@ -220,10 +262,15 @@ def roc_chart(records, width=400, height=400, as_dict=False):
     chart["height"] = height
     chart["width"] = width
 
+    if weighted:
+        _add_weighted_tooltips(chart)
+
     return altair_or_json(chart, as_dict=as_dict)
 
 
-def precision_recall_chart(records, width=400, height=400, as_dict=False):
+def precision_recall_chart(
+    records, width=400, height=400, as_dict=False, weighted=False
+):
     chart_path = "precision_recall.json"
     chart = load_chart_definition(chart_path)
 
@@ -238,10 +285,15 @@ def precision_recall_chart(records, width=400, height=400, as_dict=False):
     chart["height"] = height
     chart["width"] = width
 
+    if weighted:
+        _add_weighted_tooltips(chart)
+
     return altair_or_json(chart, as_dict=as_dict)
 
 
-def accuracy_chart(records, width=400, height=400, as_dict=False, add_metrics=[]):
+def accuracy_chart(
+    records, width=400, height=400, as_dict=False, add_metrics=[], weighted=False
+):
     chart_path = "accuracy_chart.json"
     chart = load_chart_definition(chart_path)
 
@@ -279,10 +331,15 @@ def accuracy_chart(records, width=400, height=400, as_dict=False, add_metrics=[]
     chart["height"] = height
     chart["width"] = width
 
+    if weighted:
+        _add_weighted_tooltips(chart)
+
     return altair_or_json(chart, as_dict=as_dict)
 
 
-def threshold_selection_tool(records, as_dict=False, add_metrics=[]):
+def threshold_selection_tool(
+    records, as_dict=False, add_metrics=[], weighted=False
+):
     chart_path = "threshold_selection_tool.json"
     chart = load_chart_definition(chart_path)
 
@@ -322,6 +379,9 @@ def threshold_selection_tool(records, as_dict=False, add_metrics=[]):
     )
 
     chart["data"]["values"] = records
+
+    if weighted:
+        _add_weighted_tooltips(chart)
 
     return altair_or_json(chart, as_dict=as_dict)
 

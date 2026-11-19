@@ -10,7 +10,10 @@ if TYPE_CHECKING:
 
 
 def block_from_labels(
-    linker: Linker, labels_table_name: str, include_clerical_match_score: bool = False
+    linker: Linker,
+    labels_table_name: str,
+    include_clerical_match_score: bool = False,
+    extra_label_columns: list[str] | None = None,
 ) -> list[dict[str, str]]:
     """Create pairwise record comparisons corresponding to the ID pairs in a labels
     table
@@ -26,6 +29,10 @@ def block_from_labels(
     Note that `source_dataset` and `unique_id` should correspond to the values
     specified in the settings dict, and the `input_table_aliases` passed to the
     `linker` object.
+
+    ``extra_label_columns`` names additional columns on the labels table that
+    must be carried unchanged through the blocking / orientation step (used for
+    sampling design columns such as ``inclusion_probability``).
     """
 
     df = linker._table_to_splink_dataframe(labels_table_name, labels_table_name)
@@ -67,11 +74,16 @@ def block_from_labels(
     else:
         clerical_match_score = ""
 
+    extra_cols = ""
+    if extra_label_columns:
+        extra_cols = ", " + ", ".join(extra_label_columns)
+
     sql = f"""
     select
         {sql_select_expr},
         'from_labels' as match_key
         {clerical_match_score}
+        {extra_cols}
 
 
     from
